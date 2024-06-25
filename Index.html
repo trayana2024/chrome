@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+    <link type="text/css" rel="stylesheet" href="main.css">
+</head>
+<body>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.152.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.152.0/examples/jsm/"
+            }
+        }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+        import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
+
+        let camera, scene, renderer, object;
+        let controls, backgroundMesh;
+
+        init();
+        animate();
+
+        function init() {
+            // Camera
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 20);
+            camera.position.z = 2.5;
+
+            // Scene
+            scene = new THREE.Scene();
+
+            // Lights
+            const ambientLight = new THREE.AmbientLight(0xffffff);
+            scene.add(ambientLight);
+
+            const pointLight = new THREE.PointLight(0xffffff, 15);
+            camera.add(pointLight);
+            scene.add(camera);
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            // Controls
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.minDistance = 2;
+            controls.maxDistance = 5;
+            controls.addEventListener('change', render);
+
+            // Load environment map (JPG)
+            const loader = new THREE.TextureLoader();
+            loader.load('assets/cupra04.jpg', function (texture) {
+                texture.mapping = THREE.EquirectangularReflectionMapping;
+                scene.environment = texture;
+            });
+
+            // Create background with iridescent shader
+            const backgroundGeometry = new THREE.SphereGeometry(10, 32, 32);
+            const backgroundMaterial = createIridescentShaderMaterial();
+            backgroundMesh = new THREE.Mesh(backgroundGeometry, backgroundMaterial);
+            backgroundMesh.scale.set(-1, 1, 1);
+            backgroundMesh.rotation.order = 'XZY';
+            backgroundMesh.renderOrder = 1000.0;
+            scene.add(backgroundMesh);
+
+            // Load OBJ model
+            const objLoader = new OBJLoader();
+            objLoader.load(
+                'assets/cupra08.obj',
+                function (obj) {
+                    object = obj;
+
+                    // Apply metallic material to all meshes in the loaded object
+                    object.traverse(function (child) {
+                        if (child.isMesh) {
+                            child.material = new THREE.MeshStandardMaterial({
+                                color: 0xB87333,
+                                metalness: 1.0,
+                                roughness: 0.0,
+                                envMap: scene.environment
+                            });
+                        }
+                    });
+
+                    object.position.y = -0.95;
+                    object.scale.setScalar(0.01);
+                    scene.add(object);
+                    render();
+                },
+                undefined,
+                function (error) {
+                    console.error(error);
+                }
+            );
+
+            // Handle window resize
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            render();
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Rotate the object
+            if (object) {
+                object.rotation.y += 0.01;
+            }
+
+            // Update the shader time uniform
+            backgroundMesh.material.uniforms.time.value += 0.01;
+
+            render();
+        }
+
+        function render() {
+            renderer.render(scene, camera);
+        }
+
+        function createIridescentShaderMaterial() {
+            return new THREE.ShaderMaterial({
+                uniforms: {
+                    time: { value: 0 }
+                },
+                vertexShader: `
+                    varying vec3 vNormal;
+                    varying vec3 vPosition;
+
+                    void main() {
+                        vNormal = normalMatrix * normal;
+                        vPosition = position;
+
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                    }
+                `,
+                fragmentShader: `
+                    uniform float time;
+                    varying vec3 vNormal;
+                    varying vec3 vPosition;
+
+                    // Define colors
+                    vec3 color1 = vec3(0.98, 0.30, 0.02); // Orange #FB4D06
+                    vec3 color2 = vec3(0.38, 0.0, 1.0);  // Purple #6100FF
+                    vec3 color3 = vec3(0.0);             // Black
+
+                    // Define directional vectors (normalized)
+                    vec2 dir1 = normalize(vec2(1.0, 1.0));   // Top right (orange)
+                    vec2 dir2 = normalize(vec2(-1.0, -1.0)); // Bottom left (purple)
+
+                    void main() {
+                        // Animation based on time
+                        float speed = 0.9; // Adjust animation speed
+                        float angle1 = time * speed;
+                        float angle2 = time * speed * 0.5;
+
+                        // Calculate influence based on normal direction
+                        float influence1 = max(0.0, dot(normalize(vNormal.xy), dir1));
+                        float influence2 = max(0.0, dot(normalize(vNormal.xy), dir2));
+                        float influence3 = 1.0 - influence1 - influence2; // Black influence
+
+                        // Calculate color based on influences
+                        vec3 color = mix(color1, color2, influence1 + influence2);
+                        color = mix(color, color3, influence3);
+
+                        // Add animated noise effect for fluidity
+                        float noise = 0.1 * sin(angle1 + vPosition.x * 5.0) * cos(angle2 + vPosition.y * 5.0);
+                        color += vec3(noise);
+
+                        gl_FragColor = vec4(color, 1.0);
+                    }
+                `,
+                side: THREE.BackSide
+            });
+        }
+    </script>
+</body>
+</html>
